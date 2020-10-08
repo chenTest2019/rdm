@@ -5,6 +5,8 @@ on:
     paths-ignore:
       #- README.md
       - LICENSE
+  watch:
+    types: [started]
 
 env:
   VERSION: 2020.4
