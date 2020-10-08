@@ -1,0 +1,85 @@
+name: Build amd64 RDM
+
+on: 
+#   release:
+#     types: [published]
+  push:
+    tags:
+    - '*'
+#     branches: 
+#     - master
+  # schedule:
+  #   - cron: "0 23 */2 * *"
+  watch:
+    types: [started]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest]
+        qt_ver: [5.12.6]
+        qt_arch: [clang_64]
+    steps:
+      - name: Get the version
+        id: get_version
+        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v2.0.0
+        with:
+          version: ${{ matrix.qt_ver }}
+      - name: Clone repo
+        run: |
+          git clone --recursive https://github.com/uglide/RedisDesktopManager.git -b ${{ steps.get_version.outputs.VERSION }} rdm 
+      # patch: https://github.com/cjbd/breakpad/commit/e436b073307e84a7695b355a4ea98acbe5548423
+      - name: Install requirements
+        run: |
+          set -x
+          cd rdm
+          mkdir -p ./bin/osx/release
+          cd bin/osx/release
+          echo -e '[install]\nprefix=' >> setup.cfg
+          pip3 install -t ./ -r ../../../src/py/requirements.txt --upgrade
+      - name: Build
+        run: |
+          set -x
+          cd rdm/src
+          echo -e '#ifndef RDM_VERSION\n    #define RDM_VERSION "${{ steps.get_version.outputs.VERSION }}"\n#endif // !RDM_VERSION' >> version.h
+          cp resources/Info.plist.sample resources/Info.plist
+          sed -i '' 's/0.0.0/${{ steps.get_version.outputs.VERSION }}/g' resources/Info.plist
+          qmake CONFIG-=debug CONFIG+=sdk_no_version_check
+          make -s -j 8
+      - name: Package dmg
+        run: |
+          set -x
+          cd rdm/bin/osx/release
+          macdeployqt Redis\ Desktop\ Manager.app -qmldir=../../../src/qml -verbose=1 -dmg
+          cp Redis\ Desktop\ Manager.dmg redis-desktop-manager-${{ steps.get_version.outputs.VERSION }}.dmg
+          zip --junk-paths rdm.zip redis-desktop-manager-${{ steps.get_version.outputs.VERSION }}.dmg
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+          asset_path: ./rdm/bin/osx/release/rdm.zip
+          asset_name: rdm.zip
+          asset_content_type: application/zip
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: rdm
+          path: ./rdm/bin/osx/release/rdm.zip
