@@ -92,10 +92,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ env.VERSION }}
-          release_name: ${{ env.VERSION }}
+          #tag_name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}-${{ github.run_id }}
+          release_name: ${{ env.VERSION }}-${{ github.run_id }}
           body: |
-            RDM Windows v${{ env.VERSION }}
+            RDM Windows ${{ env.VERSION }}-${{ github.run_id }}
       - name: Upload release
         uses: actions/upload-release-asset@v1
         env:
