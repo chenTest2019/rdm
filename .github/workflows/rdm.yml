@@ -1,85 +1,105 @@
-name: Build amd64 RDM
+name: RDM amd64 build CI
 
-on: 
-#   release:
-#     types: [published]
+on:
   push:
-    tags:
-    - '*'
-#     branches: 
-#     - master
-  # schedule:
-  #   - cron: "0 23 */2 * *"
-  watch:
-    types: [started]
+    paths-ignore:
+      #- README.md
+      - LICENSE
+
+env:
+  VERSION: 2020.4
+  GIT_REF: 6a635b624c2a24c98b973b7c1e7729b4d8c98976
+  PYTHON_EMBEDDED_VERSION: 3.7.9
+  QT_VER: 5.15.1
 
 jobs:
   build:
     name: Build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest]
-        qt_ver: [5.12.6]
-        qt_arch: [clang_64]
+    runs-on: windows-latest
+    env:
+      OUTPUT_DIR: ${{ github.workspace }}\rdm\build\windows\installer\resources
+      SRC_DIR: ${{ github.workspace }}\rdm\src
+      THIRDPARTY_DIR: ${{ github.workspace }}\rdm\3rdparty
+      RELEASE_DIR: ${{ github.workspace }}\rdm\bin\windows\release
     steps:
-      - name: Get the version
-        id: get_version
-        run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\//}
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v2.0.0
-        with:
-          version: ${{ matrix.qt_ver }}
       - name: Clone repo
+        uses: actions/checkout@v2
+        with:
+          repository: uglide/RedisDesktopManager
+          path: rdm
+          submodules: recursive
+          ref: ${{ env.GIT_REF }}
+
+      - name: Cache Qt
+        id: WindowsCacheQt
+        uses: actions/cache@v1
+        with:
+          path: ../Qt/${{ env.QT_VER }}
+          key: Qt${{ env.QT_VER }}
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v2
+        with:
+          version: ${{ env.QT_VER }}
+          modules: qtcharts
+          cached: ${{ steps.WindowsCacheQt.outputs.cache-hit }}
+
+      - name: Prepare build
+        shell: cmd
         run: |
-          git clone --recursive https://github.com/uglide/RedisDesktopManager.git -b ${{ steps.get_version.outputs.VERSION }} rdm 
-      # patch: https://github.com/cjbd/breakpad/commit/e436b073307e84a7695b355a4ea98acbe5548423
-      - name: Install requirements
-        run: |
-          set -x
-          cd rdm
-          mkdir -p ./bin/osx/release
-          cd bin/osx/release
-          echo -e '[install]\nprefix=' >> setup.cfg
-          pip3 install -t ./ -r ../../../src/py/requirements.txt --upgrade
+          cd %THIRDPARTY_DIR%
+          nuget install zlib-msvc14-x64 -Version 1.2.11.7795
+          cd %THIRDPARTY_DIR%\lz4\build\cmake
+          cmake -G "Visual Studio 16 2019" -A x64 -DLZ4_BUNDLED_MODE=on -DBUILD_SHARED_LIBS=on --build .
+          cmake --build . --config "Release"
+          cd %THIRDPARTY_DIR%\qredisclient\3rdparty\hiredis
+          git apply ..\hiredis-win.patch
+          mklink /d "C:\Python37-x64" "C:\hostedtoolcache\windows\python\%PYTHON_EMBEDDED_VERSION%\x64"
       - name: Build
+        shell: cmd
+        working-directory: ${{ env.SRC_DIR }}
         run: |
-          set -x
-          cd rdm/src
-          echo -e '#ifndef RDM_VERSION\n    #define RDM_VERSION "${{ steps.get_version.outputs.VERSION }}"\n#endif // !RDM_VERSION' >> version.h
-          cp resources/Info.plist.sample resources/Info.plist
-          sed -i '' 's/0.0.0/${{ steps.get_version.outputs.VERSION }}/g' resources/Info.plist
-          qmake CONFIG-=debug CONFIG+=sdk_no_version_check
-          make -s -j 8
-      - name: Package dmg
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          lrelease rdm.pro
+          qmake rdm.pro CONFIG+=release VERSION+=%VERSION%
+          nmake /S /NOLOGO release
+          copy %RELEASE_DIR%\rdm.exe %OUTPUT_DIR%
+          xcopy resources\translations\*.qm %OUTPUT_DIR%\translations /s /i
+      - name: Create package
+        shell: cmd
+        working-directory: ${{ env.OUTPUT_DIR }}
         run: |
-          set -x
-          cd rdm/bin/osx/release
-          macdeployqt Redis\ Desktop\ Manager.app -qmldir=../../../src/qml -verbose=1 -dmg
-          cp Redis\ Desktop\ Manager.dmg redis-desktop-manager-${{ steps.get_version.outputs.VERSION }}.dmg
-          zip --junk-paths rdm.zip redis-desktop-manager-${{ steps.get_version.outputs.VERSION }}.dmg
-      - name: Create Release
+          xcopy %SRC_DIR%\py . /s /i
+          mkdir Lib\site-packages
+          pip3 install --upgrade pip wheel
+          pip3 install -t Lib\site-packages -r requirements.txt
+          python -m compileall -b .
+          del /s /q *.py requirements.txt
+          forfiles /p "." /s /m __pycache__ /c "cmd /c if @isdir==TRUE rd /s /q @file 2>nul" 2>nul | exit /b 0
+          forfiles /p "." /s /m *.dist-info /c "cmd /c if @isdir==TRUE rd /s /q @file 2>nul" 2>nul | exit /b 0
+          forfiles /p "." /s /m *.egg-info /c "cmd /c if @isdir==TRUE rd /s /q @file 2>nul" 2>nul | exit /b 0
+          forfiles /p "." /s /m tests /c "cmd /c if @isdir==TRUE rd /s /q @file 2>nul" 2>nul | exit /b 0
+          C:\msys64\usr\bin\wget "https://www.python.org/ftp/python/%PYTHON_EMBEDDED_VERSION%/python-%PYTHON_EMBEDDED_VERSION%-embed-amd64.zip"
+          7z.exe x python-%PYTHON_EMBEDDED_VERSION%-embed-amd64.zip python37.zip python37.dll unicodedata.pyd _bz2.pyd
+          del python-%PYTHON_EMBEDDED_VERSION%-embed-amd64.zip
+          windeployqt --no-angle --no-opengl-sw --no-compiler-runtime --no-translations --release --force --qmldir %SRC_DIR%/qml rdm.exe
+          makensis.exe /V1 /DVERSION=%VERSION%.0 ../installer.nsi
+      - name: Create release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-      - name: Upload Release Asset
-        id: upload-release-asset 
+          tag_name: ${{ env.VERSION }}
+          release_name: ${{ env.VERSION }}
+          body: |
+            RDM Windows v${{ env.VERSION }}
+      - name: Upload release
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-          asset_path: ./rdm/bin/osx/release/rdm.zip
-          asset_name: rdm.zip
-          asset_content_type: application/zip
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v2
-        with:
-          name: rdm
-          path: ./rdm/bin/osx/release/rdm.zip
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: rdm/build/windows/installer/redis-desktop-manager-${{ env.VERSION }}.0.exe
+          asset_name: redis-desktop-manager-${{ env.VERSION }}.exe
+          asset_content_type: application/vnd.microsoft.portable-executable
