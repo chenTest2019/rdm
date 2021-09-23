@@ -9,7 +9,7 @@ on:
     types: [started]
 
 env:
-  VERSION: 2020.4
+  VERSION: 2021
   GIT_REF: 6a635b624c2a24c98b973b7c1e7729b4d8c98976
   PYTHON_EMBEDDED_VERSION: 3.7.9
   QT_VER: 5.15.1
